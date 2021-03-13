@@ -1,0 +1,339 @@
+---
+title: "Project-BreastCancer"
+author: "Yujin Lee"
+date: "3/10/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+#bring the data
+library(mlbench)
+data("BreastCancer")
+BreastCancer
+summary(BreastCancer)
+str(BreastCancer)
+
+# assign column 2-10 into the 
+BreastCancer[,2:10] <-sapply(BreastCancer[,2:10], as.numeric)
+str(BreastCancer)
+
+#count NAs
+na_count <-sapply(BreastCancer, function(y) sum(length(which(is.na(y)))))
+na_count <-data.frame(na_count,nrow(BreastCancer),(na_count/nrow(BreastCancer))*100)
+names(na_count)<-c("NA_Count","Total Row Count","NA %")
+na_count[order(-na_count$`NA %`),]
+```
+Based on NA counts table, there is 16 Bare.nuclei value out of total 699 missing. As the percentage of the missing value is very small, i decided to replace the missing value with the mean of the other existing values.
+```{r}
+# mean subsitution
+BreastCancer$Bare.nuclei[is.na(BreastCancer$Bare.nuclei)] <-mean(BreastCancer$Bare.nuclei, na.rm= TRUE)
+
+#checking again
+na_count <-sapply(BreastCancer, function(y) sum(length(which(is.na(y)))))
+na_count <-data.frame(na_count,nrow(BreastCancer),(na_count/nrow(BreastCancer))*100)
+names(na_count)<-c("NA_Count","Total Row Count","NA %")
+na_count[order(-na_count$`NA %`),]
+
+```
+
+```{r}
+#drop the first column ID as it does not mean anything
+BreastCancer <-BreastCancer[-c(1)]
+BreastCancer
+
+mydata <- cbind(BreastCancer[10],BreastCancer[1:9])
+
+mydata
+
+```
+split data 60% 40%
+```{r}
+train.index <-sample(c(1:dim(BreastCancer)[1]), dim(BreastCancer)[1]*0.6)
+train.df <-BreastCancer[train.index,]
+valid.df <-BreastCancer[-train.index,]
+```
+
+
+#SVM
+```{r}
+library(caret)
+library(e1071)
+set.seed(1234)
+#mysvm <- svm(Class ~ ., data = train.df)
+#mysvm.pred <- predict(mysvm, data = train.df)
+#table(mysvm.pred,train.df$Class)
+
+
+# svm requires tuning
+mysvm.tune <- tune(svm, Class~., data = train.df,
+                   ranges = list(gamma = 2^(-8:1), cost = 2^(0:4)),
+                   tunecontrol = tune.control(sampling = "fix")) 
+# display the tuning results (in text format)
+mysvm.tune #note the gamma and cost
+# If the tuning results are on the margin of the parameters (e.g., gamma = 2^-8), 
+# then widen the parameters.
+# I manually copied the cost and gamma from console messages above to parameters below.
+x.svm <- svm(Class~., data = train.df, cost=1, gamma=0.00390625	, probability = TRUE) #
+
+mysvm.pred <- predict(x.svm, type="class", newdata=valid.df) #ensemble; only give the class
+mysvm.prob <- predict(x.svm, type="prob", newdata=valid.df, probability = TRUE) # has to include probability = TRUE while type="prob" is not needed
+#t <- attr(mysvm.prob, "probabilities") # only give the probabilities
+table(mysvm.pred,valid.df$Class)
+#Prediction  benign malignant
+#  benign       166         4
+#  malignant      3       107
+            
+confusionMatrix(as.factor(mysvm.pred), as.factor(valid.df$Class))
+                               
+               #Accuracy : 0.975  
+
+```
+#Naive Bayes
+```{r}
+
+#install.packages("klaR")
+library(klaR)
+mynb <- naiveBayes(Class ~ ., train.df, laplace = 0)
+mynb.pred <- predict(mynb,valid.df,type="class")
+mynb.prob <- predict(mynb,valid.df,type="raw")
+table(mynb.pred,valid.df$Class)
+#Prediction  benign malignant
+#  benign       161         0
+#  malignant      8       111
+
+confusionMatrix(as.factor(mynb.pred), as.factor(valid.df$Class))
+                                         
+              # Accuracy : 0.9714 
+```
+#Neural Network
+```{r}
+library(nnet)
+mynnet <- nnet(Class ~ ., train.df, size=1)
+mynnet.pred <- predict(mynnet,valid.df,type="class")
+mynnet.prob <- predict(mynnet,valid.df,type="raw")
+table(mynnet.pred,valid.df$Class)
+#Prediction  benign malignant
+#  benign       163         4
+#  malignant      6       107
+                                          
+           
+confusionMatrix(as.factor(mynnet.pred), as.factor(valid.df$Class))
+#    Accuracy : 0.9643
+```
+
+#Decision trees
+```{r}
+#data(BreastCancer)
+library(MASS)
+#Decision trees
+library(rpart)
+library(rpart.plot)
+
+mytree <- rpart(Class ~ ., train.df)
+plot(mytree); text(mytree) # in "BreastCancer_tree.ps"
+summary(mytree)
+
+
+prp(mytree, type = 1, extra = 1, split.font = 1, varlen = -10)  
+
+#prediction
+# predict classes for the evaluation data set
+pred.pred <- predict(mytree, type="class", newdata=valid.df)  # to ensemble
+# score the evaluation data set (extract the probabilities)
+pred.prob <- predict(mytree, type="prob", newdata=valid.df)
+table(pred.pred,valid.df$Class)
+#pred.pred   benign malignant
+#  benign       156         7
+#  malignant     13       104
+confusionMatrix(as.factor(pred.pred), as.factor(valid.df$Class))
+# Accuracy : 0.9286    
+```
+
+#conditional inference trees
+```{r}
+
+#install.packages("party")
+library(party)
+require(party)
+ct <- ctree(Class ~ ., data=train.df)
+plot(ct, main="Decision tree created using condition inference trees") 
+
+ct.pred <- predict(ct, newdata=valid.df) 
+ct.prob <-  1- unlist(treeresponse(ct, valid.df), use.names=F)[seq(1,nrow(valid.df)*2,2)]
+table(ct.pred,valid.df$Class)
+#Prediction  benign malignant
+#  benign       156         0
+#  malignant     13       111
+       
+confusionMatrix(as.factor(ct.pred), as.factor(valid.df$Class))
+#Accuracy : 0.9536  
+```
+#Random Forest
+```{r}
+
+library(randomForest)
+library(party)
+#Applying conditional inference trees as base learners for random forests
+myrf <- randomForest(Class ~ ., train.df, control = cforest_unbiased(mtry = 9))
+rf.pred <- predict(myrf, newdata=valid.df)
+table(rf.pred, valid.df$Class)
+#Prediction  benign malignant
+#benign       165         3
+# malignant      4       108
+                                          
+               
+confusionMatrix(as.factor(rf.pred), as.factor(valid.df$Class))
+#Accuracy : 0.975 
+```
+
+# Leave-1-Out Cross Validation (LOOCV)
+```{r}
+ans <- numeric(length(BreastCancer[,1]))
+for (i in 1:length(BreastCancer[,1])) {
+  mytree <- rpart(Class ~ ., BreastCancer[-i,])
+  mytree.pred <- predict(mytree,BreastCancer[i,],type="class")
+  ans[i] <- mytree.pred
+}
+ans <- factor(ans,labels=levels(BreastCancer$Class))
+table(ans,BreastCancer$Class)
+# ans         benign malignant
+#  benign       442        24
+#  malignant     16       217
+
+confusionMatrix(ans,BreastCancer$Class)
+ #     Accuracy : 0.9428     
+```
+#Quadratic Discriminant Analysis
+```{r}
+library(MASS)
+myqda <- qda(Class ~ ., train.df)
+myqda.pred <- predict(myqda, newdata=valid.df)
+myqda.prob <- predict(myqda,valid.df)$posterior 
+table(myqda.pred$class,valid.df$Class)
+#Prediction  benign malignant
+#  benign       158         0
+#  malignant     11       111
+
+confusionMatrix(as.factor(myqda.pred$class), as.factor(valid.df$Class))
+#Accuracy : 0.9607 
+
+```
+#Regularised Discriminant Analysis
+```{r}
+library(klaR)
+myrda <- rda(Class ~ ., train.df)
+myrda.pred <- predict(myrda, newdata=valid.df)
+myrda.prob <- predict(myrda, valid.df)$posterior
+table(myrda.pred$class,valid.df$Class)
+#Prediction  benign malignant
+#  benign       165         2
+#  malignant      4       109
+
+confusionMatrix(as.factor(myrda.pred$class), as.factor(valid.df$Class))
+#  Accuracy : 0.9786 
+
+
+```
+#Bagging
+```{r}
+require(ipred)
+mybaggy <- bagging(Class ~ ., data=train.df) 
+
+mybaggy.pred <- predict(mybaggy, newdata=valid.df)
+mybaggy.prob <- predict(mybaggy, type="prob", newdata=valid.df)
+table(mybaggy.pred,valid.df$Class)
+#Prediction  benign malignant
+#  benign       163         2
+#  malignant      6       109
+                                          
+ 
+confusionMatrix(as.factor(mybaggy.pred), as.factor(valid.df$Class))
+#Accuracy : 0.9714 
+```
+```{r}
+# load the ROCR package which draws the ROC curves
+require(ROCR)
+
+# svm
+
+# create an ROCR prediction object from rpart() probabilities
+x.rp.prob.rocr <- prediction(attr(mysvm.prob, "probabilities")[,2], valid.df[,'Class'])
+# prepare an ROCR performance object for ROC curve (tpr=true positive rate, fpr=false positive rate)
+x.rp.perf <- performance(x.rp.prob.rocr, "tpr","fpr")
+# plot it
+plot(x.rp.perf, col=2, main="ROC curves comparing classification performance of five machine learning models")
+
+#Naive Bayes
+x.nb.prob.rocr <- prediction(mynb.prob[,2], valid.df[,'Class'])
+x.nb.perf <- performance(x.nb.prob.rocr, "tpr","fpr")
+plot(x.nb.perf , col=3, add=TRUE)
+#Neural Network
+x.nn.prob.rocr <- prediction(mynnet.prob, valid.df[,'Class'])
+x.nn.perf <- performance(x.nn.prob.rocr, "tpr","fpr")
+plot(x.nn.perf , col=4, add=TRUE)
+#Decision Trees
+x.rp.prob.rocr <- prediction(pred.prob[,2], valid.df[,'Class'])
+x.rp.perf <- performance(x.rp.prob.rocr, "tpr","fpr")
+plot(x.rp.perf , col=5, add=TRUE)
+#conditional inference trees
+x.ct.prob.rocr <- prediction(ct.prob, valid.df[,'Class'])
+x.ct.perf <- performance(x.ct.prob.rocr, "tpr","fpr")
+plot(x.ct.perf , col=6, add=TRUE)
+#Bagging
+mybaggy.prob.rocr <- prediction(mybaggy.prob [,2], valid.df[,'Class'])
+mybaggy.prob.perf <- performance(mybaggy.prob.rocr, "tpr","fpr")
+plot(mybaggy.prob.perf , col=7, add=TRUE)
+#qda
+x.qda.prob.rocr <- prediction(myqda.prob[,2], valid.df[,'Class'])
+x.qda.perf <- performance(x.qda.prob.rocr, "tpr","fpr")
+plot(x.qda.perf , col=8, add=TRUE)
+#rda
+x.rda.prob.rocr <- prediction(myrda.prob[,2], valid.df[,'Class'])
+x.rda.perf <- performance(x.rda.prob.rocr, "tpr","fpr")
+plot(x.rda.perf, col=9, add=TRUE)
+
+
+
+```
+```{r}
+#cbine all preds from all models
+ensmble.df <- data.frame(cbind(mysvm.pred
+, mynb.pred
+, mynnet.pred
+,pred.pred
+,ct.pred
+,rf.pred
+,myqda.pred
+,myrda.pred
+,mybaggy.pred
+))
+
+names(ensmble.df) <-c('SVM','NaiveBayes','NeuralNetwork','DecisionTrees
+','conditionalInferenceTrees','RandomForest','QDA','RDA','Bagging')
+levels(ensmble.df$NeuralNetwork) =c('1','2')
+library(dplyr)
+Com.df <-ensmble.df%>% sapply(FUN = function(x)(ifelse(x=='1',0,1)))
+Com.df<- addmargins(Com.df, margin = 2)
+Com.df <- data.frame(Com.df)
+Com.df$predition <- ifelse(Com.df$Sum >=5, 'malignant','benign')
+
+
+#confusion matrix 
+library(caret)
+Comcm <-confusionMatrix(as.factor(Com.df$predition), valid.df$Class, positive = 'malignant')
+Comcm
+com_ensemble <- Comcm$overall['Accuracy']*100
+
+Accuracy_Ensemble <- round(com_ensemble,2)
+
+
+paste0("The accuracy of the overall ensemble models is ",Accuracy_Ensemble,"%")
+
+
+```
+
+
+
